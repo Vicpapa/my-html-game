@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>打磚塊 - 遊玩人數統計</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body { margin: 0; background: #000; color: white; text-align: center; font-family: Arial; overflow: hidden; }
+        canvas { border: 2px solid #0f0; background: #111; display: block; margin: 10px auto; max-width: 100%; touch-action: none; }
+        button { padding: 10px 20px; margin: 5px; background: #0f0; border: none; color: black; font-weight: bold; cursor: pointer; border-radius: 5px; transition: 0.2s; }
+        button:hover:not(:disabled) { background: #0c0; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+        .info { margin: 10px; font-size: 18px; }
+        .speed-info { color: #ff0; font-weight: bold; }
+        .counter-info { 
+            color: #0ff; 
+            font-weight: bold;
+            background: rgba(0, 255, 255, 0.1);
+            padding: 5px 10px;
+            border-radius: 10px;
+            display: inline-block;
+            margin: 5px;
+        }
+        .level-up { 
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 48px; color: #0f0; font-weight: bold; text-shadow: 0 0 10px #0f0;
+            opacity: 0; transition: opacity 0.5s; pointer-events: none;
+            z-index: 100;
+        }
+        .start-hint {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #0f0;
+            font-size: 24px;
+            text-align: center;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid #0f0;
+            pointer-events: none;
+        }
+        .game-over-screen {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.95);
+            padding: 40px;
+            border-radius: 15px;
+            text-align: center;
+            border: 3px solid #f00;
+            z-index: 200;
+            display: none;
+        }
+        .debug { color: #888; font-size: 12px; margin-top: 10px; }
+        .stats {
+            background: rgba(255,255,255,0.1);
+            padding: 10px;
+            border-radius: 10px;
+            margin: 10px auto;
+            max-width: 800px;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+        }
+        .stat-item {
+            margin: 5px 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎮 打磚塊 🎮</h1>
+    
+    <div class="stats">
+        <div class="stat-item">
+            🎯 總遊玩人數: <span id="totalPlayers" class="counter-info">0</span>
+        </div>
+        <div class="stat-item">
+            👥 今日遊玩: <span id="todayPlayers" class="counter-info">0</span>
+        </div>
+        <div class="stat-item">
+            🏆 最高分數: <span id="highScore" class="counter-info">0</span>
+        </div>
+        <div class="stat-item">
+            ⭐ 最高關卡: <span id="maxLevel" class="counter-info">1</span>
+        </div>
+    </div>
+    
+    <div class="info">
+        分數: <span id="score">0</span> | 
+        生命: <span id="lives">3</span> | 
+        關卡: <span id="level">1/10</span> | 
+        速度: <span id="speed" class="speed-info">5</span>
+    </div>
+    
+    <div style="position: relative; display: inline-block;">
+        <canvas id="gameCanvas" width="800" height="500"></canvas>
+        <div class="start-hint" id="startHint">點擊畫面開始發球</div>
+        <div class="game-over-screen" id="gameOverScreen">
+            <h2 style="color: #f00;">💀 遊戲結束 💀</h2>
+            <p>你的分數: <span id="finalScore">0</span></p>
+            <p>到達關卡: <span id="finalLevel">1</span></p>
+            <p>🎯 總遊玩人數: <span id="finalTotalPlayers">0</span></p>
+            <button onclick="resetToLevel1()">從第1關重新開始</button>
+        </div>
+    </div>
+    
+    <div>
+        <button id="startBtn" onclick="startGame()">開始遊戲</button>
+    </div>
+    
+    <div class="level-up" id="levelUp">關卡完成！</div>
+    <div class="debug" id="debug">狀態: 準備中</div>
+
+    <script>
+        // ==================== 音效系統 ====================
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContext();
+
+        function playTone(freq, type = 'square', duration = 0.1) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+
+            oscillator.type = type;
+            oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime); 
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + duration);
+        }
+
+        const sounds = {
+            paddle: () => playTone(300, 'square', 0.1),
+            wall: () => playTone(150, 'square', 0.1),
+            brick: () => playTone(600, 'sine', 0.08),
+            miss: () => playTone(100, 'sawtooth', 0.3),
+            drop: () => playTone(80, 'square', 0.15), 
+            levelUp: () => { playTone(400, 'sine', 0.1); setTimeout(() => playTone(600, 'sine', 0.2), 100); },
+            gameOver: () => { playTone(200, 'sawtooth', 0.3); setTimeout(() => playTone(150, 'sawtooth', 0.5), 300); }
+        };
+
+        // ==================== 統計系統 ====================
+        const STATS_KEY = 'breakout_stats';
+        
+        function initStats() {
+            let stats = { totalPlayers: 0, todayPlayers: 0, todayDate: getTodayDate(), highScore: 0, maxLevel: 1, sessions: [] };
+            try {
+                const saved = localStorage.getItem(STATS_KEY);
+                if (saved) {
+                    stats = JSON.parse(saved);
+                    if (stats.todayDate !== getTodayDate()) { stats.todayPlayers = 0; stats.todayDate = getTodayDate(); }
+                }
+            } catch (e) {}
+            return stats;
+        }
+        
+        function getTodayDate() {
+            const now = new Date();
+            return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        }
+        
+        function recordNewPlayer() {
+            let stats = initStats();
+            const sessionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+            if (!stats.sessions.includes(sessionId)) {
+                stats.totalPlayers++; stats.todayPlayers++; stats.sessions.push(sessionId);
+                if (stats.sessions.length > 1000) stats.sessions = stats.sessions.slice(-500);
+                saveStats(stats);
+            }
+            return stats;
+        }
+        
+        function updateHighScore(score) {
+            let stats = initStats();
+            if (score > stats.highScore) { stats.highScore = score; saveStats(stats); }
+            return stats.highScore;
+        }
+        
+        function updateMaxLevel(level) {
+            let stats = initStats();
+            if (level > stats.maxLevel) { stats.maxLevel = level; saveStats(stats); }
+            return stats.maxLevel;
+        }
+        
+        function saveStats(stats) {
+            try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)); } catch (e) {}
+        }
+        
+        function updateStatsDisplay() {
+            const stats = initStats();
+            document.getElementById('totalPlayers').textContent = stats.totalPlayers;
+            document.getElementById('todayPlayers').textContent = stats.todayPlayers;
+            document.getElementById('highScore').textContent = stats.highScore;
+            document.getElementById('maxLevel').textContent = stats.maxLevel;
+            document.getElementById('finalTotalPlayers').textContent = stats.totalPlayers;
+        }
+        
+        // ==================== 遊戲系統 ====================
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const debug = document.getElementById('debug');
+        const startHint = document.getElementById('startHint');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScoreElement = document.getElementById('finalScore');
+        const finalLevelElement = document.getElementById('finalLevel');
+        const startBtn = document.getElementById('startBtn');
+        
+        const MAX_LEVEL = 10;
+        let gameRunning = false;
+        let gamePaused = false;
+        let ballIsMoving = false;
+        let gameCleared = false;
+        let score = 0;
+        let lives = 3;
+        let currentLevel = 1;
+        let highestLevel = 1;
+        let isNewPlayerRecorded = false;
+        
+        let lastDropTime = 0;
+        const DROP_INTERVAL = 20000; 
+        let dropCount = 0;
+        
+        let ball = { x: 400, y: 450, dx: 0, dy: 0, radius: 10 };
+        let paddle = { x: 350, y: 480, width: 100, height: 15 };
+        let bricks = [];
+        let particles = [];
+        const BRICK_ROWS = 4;
+        const BRICK_COLS = 10;
+        
+        function getLevelSpeed() {
+            return 4 + currentLevel; 
+        }
+        
+        function updateBallDisplaySpeed() {
+            const speedVal = getLevelSpeed();
+            document.getElementById('speed').textContent = speedVal;
+            document.getElementById('level').textContent = `${currentLevel}/10`;
+            debug.textContent = `第${currentLevel}關，速度: ${speedVal}`;
+        }
+        
+        function launchBall() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            if (!ballIsMoving && !gameCleared) {
+                ballIsMoving = true;
+                lastDropTime = Date.now();
+                
+                const levelSpeed = getLevelSpeed();
+                
+                if (!isNewPlayerRecorded) {
+                    recordNewPlayer();
+                    updateStatsDisplay();
+                    isNewPlayerRecorded = true;
+                }
+                
+                const startAngle = (Math.random() - 0.5) * (Math.PI / 3);
+                ball.dx = levelSpeed * Math.sin(startAngle);
+                ball.dy = -levelSpeed * Math.cos(startAngle);
+                
+                startHint.style.display = 'none';
+                debug.textContent = `遊戲進行中，第${currentLevel}關`;
+            }
+        }
+        
+        function resetBall() {
+            ball.x = 400;
+            ball.y = 450;
+            ball.dx = 0;
+            ball.dy = 0;
+            updateBallDisplaySpeed();
+            startHint.style.display = 'block';
+            startHint.textContent = '點擊畫面開始發球';
+        }
+        
+        function initBricks() {
+            bricks = [];
+            for (let i = 0; i < BRICK_COLS; i++) {
+                for (let j = 0; j < BRICK_ROWS; j++) {
+                    if (Math.random() < 0.7) {
+                        bricks.push({
+                            x: 35 + i * 73, y: 60 + j * 30, width: 68, height: 20, alive: true,
+                            color: j === 0 ? '#f00' : j === 1 ? '#00f' : j === 2 ? '#0f0' : '#ff0',
+                            points: (j + 1) * 10
+                        });
+                    }
+                }
+            }
+        }
+        
+        function showLevelUp() {
+            const levelUp = document.getElementById('levelUp');
+            levelUp.textContent = `第 ${currentLevel} 關完成！`;
+            levelUp.style.opacity = '1';
+            setTimeout(() => { levelUp.style.opacity = '0'; }, 1500);
+        }
+        
+        function nextLevel() {
+            if (currentLevel >= MAX_LEVEL) {
+                gameCleared = true; 
+                ballIsMoving = false;
+                sounds.levelUp();
+                updateHighScore(score); updateMaxLevel(currentLevel); updateStatsDisplay();
+                
+                startHint.style.display = 'block';
+                startHint.innerHTML = '🎉 恭喜通關！<br>點擊畫面重新開始遊戲';
+                return;
+            }
+            
+            sounds.levelUp();
+            gamePaused = true; ballIsMoving = false;
+            dropCount = 0;
+            
+            if (currentLevel + 1 > highestLevel) {
+                highestLevel = currentLevel + 1;
+                updateMaxLevel(highestLevel); updateStatsDisplay();
+            }
+            
+            currentLevel++;
+            showLevelUp();
+            updateBallDisplaySpeed();
+            
+            ball.x = 400; ball.y = 450; ball.dx = 0; ball.dy = 0; paddle.x = 350;
+            
+            setTimeout(() => {
+                initBricks();
+                gamePaused = false;
+                startHint.style.display = 'block';
+                startHint.textContent = '點擊畫面開始發球';
+                debug.textContent = `第${currentLevel}關準備，點擊發球`;
+            }, 1500);
+        }
+        
+        function dropBricks() {
+            sounds.drop();
+            dropCount++;
+            
+            if (dropCount >= 5) {
+                handleLifeLost('時間到！5次下壓未過關');
+                return;
+            }
+
+            let touchedBottom = false;
+            bricks.forEach(brick => {
+                if (brick.alive) {
+                    brick.y += 30;
+                    if (brick.y + brick.height >= paddle.y) {
+                        touchedBottom = true;
+                    }
+                }
+            });
+            
+            if (touchedBottom) {
+                handleLifeLost('磚塊壓到防線了');
+            }
+        }
+        
+        function handleLifeLost(reasonText) {
+            lives--;
+            document.getElementById('lives').textContent = lives;
+            
+            if (lives <= 0) {
+                gameOver();
+            } else {
+                sounds.miss();
+                ballIsMoving = false;
+                dropCount = 0; 
+                initBricks();  
+                resetBall();
+                
+                startHint.style.display = 'block';
+                startHint.textContent = `${reasonText}，生命-1 (本關重置)`;
+                debug.textContent = `生命剩 ${lives}，點擊繼續`;
+            }
+        }
+        
+        function gameOver() {
+            gameRunning = false; ballIsMoving = false; gamePaused = false;
+            sounds.gameOver();
+            startBtn.disabled = true; 
+            
+            if (currentLevel > highestLevel) { highestLevel = currentLevel; updateMaxLevel(highestLevel); }
+            
+            updateHighScore(score); updateStatsDisplay();
+            finalScoreElement.textContent = score; finalLevelElement.textContent = highestLevel;
+            gameOverScreen.style.display = 'block';
+            debug.textContent = '遊戲結束';
+        }
+        
+        function resetToLevel1() {
+            gameOverScreen.style.display = 'none';
+            score = 0; lives = 3; currentLevel = 1; highestLevel = 1; 
+            isNewPlayerRecorded = false; 
+            gameCleared = false;
+            particles = [];
+            dropCount = 0;
+            startBtn.disabled = false; 
+            
+            document.getElementById('score').textContent = '0';
+            document.getElementById('lives').textContent = '3';
+            
+            initBricks();
+            updateBallDisplaySpeed();
+            startGame();
+            
+            debug.textContent = '已重置到第1關，點擊發球';
+        }
+        
+        function draw() {
+            if (gameCleared) {
+                ctx.fillStyle = 'rgba(17, 17, 17, 0.2)'; 
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                particles.forEach(p => {
+                    ctx.globalAlpha = Math.max(0, p.alpha);
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2); ctx.fill();
+                });
+                ctx.globalAlpha = 1;
+                
+                ctx.fillStyle = '#0f0'; ctx.font = 'bold 40px Arial'; ctx.textAlign = 'center';
+                ctx.fillText('🏆 恭喜通關全10關！ 🏆', canvas.width/2, canvas.height/2 - 30);
+                ctx.fillStyle = '#fff'; ctx.font = '24px Arial';
+                ctx.fillText(`最終分數: ${score}`, canvas.width/2, canvas.height/2 + 20);
+                ctx.textAlign = 'left';
+                return; 
+            }
+            
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.fillStyle = '#0f0';
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#f0f';
+            ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+            
+            let aliveCount = 0;
+            bricks.forEach(brick => {
+                if (brick.alive) {
+                    aliveCount++;
+                    ctx.fillStyle = brick.color;
+                    ctx.fillRect(brick.x, brick.y, brick.width, brick.height);
+                    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+                    ctx.strokeRect(brick.x, brick.y, brick.width, brick.height);
+                }
+            });
+            
+            if (aliveCount > 0) {
+                ctx.fillStyle = '#888'; ctx.font = '12px Arial';
+                ctx.fillText(`剩餘: ${aliveCount}`, 700, 20);
+            }
+            
+            if (ballIsMoving) {
+                let timeLeft = Math.ceil((DROP_INTERVAL - (Date.now() - lastDropTime)) / 1000);
+                if (timeLeft < 0) timeLeft = 0;
+                
+                ctx.fillStyle = timeLeft <= 5 ? '#f00' : '#0ff'; 
+                ctx.font = '14px Arial';
+                ctx.fillText(`下壓倒數: ${timeLeft} 秒 (已降 ${dropCount}/5 次)`, 300, 20);
+            }
+            
+            ctx.fillStyle = '#ff0'; ctx.font = '14px Arial';
+            ctx.fillText(`速度 ${getLevelSpeed()}`, 10, 20);
+            
+            if (!ballIsMoving && gameRunning) {
+                ctx.fillStyle = '#0ff'; ctx.font = '12px Arial';
+                ctx.fillText('等待發球...', 10, 40);
+            }
+        }
+        
+        function update() {
+            if (gameCleared) {
+                particles.forEach((p, index) => {
+                    p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.alpha -= 0.01;
+                    if (p.alpha <= 0) particles.splice(index, 1);
+                });
+                
+                if (Math.random() < 0.1) {
+                    let bx = Math.random() * canvas.width;
+                    let by = Math.random() * (canvas.height / 2);
+                    for(let i=0; i<30; i++) {
+                        particles.push({
+                            x: bx, y: by, 
+                            vx: (Math.random()-0.5)*8, vy: (Math.random()-0.5)*8,
+                            radius: Math.random()*3+1, 
+                            color: `hsl(${Math.random()*360}, 100%, 50%)`, 
+                            alpha: 1
+                        });
+                    }
+                }
+                return;
+            }
+        
+            if (!gameRunning || gamePaused) return;
+            
+            if (ballIsMoving) {
+                const currentTime = Date.now();
+                if (currentTime - lastDropTime >= DROP_INTERVAL) {
+                    dropBricks();
+                    lastDropTime = currentTime; 
+                }
+                
+                ball.x += ball.dx;
+                ball.y += ball.dy;
+                
+                // 撞牆處理
+                if (ball.x < ball.radius) { ball.x = ball.radius; ball.dx = -ball.dx; sounds.wall(); }
+                if (ball.x > canvas.width - ball.radius) { ball.x = canvas.width - ball.radius; ball.dx = -ball.dx; sounds.wall(); }
+                if (ball.y < ball.radius) { ball.y = ball.radius; ball.dy = -ball.dy; sounds.wall(); }
+                
+                // 撞板處理
+                if (ball.y > paddle.y - ball.radius && ball.y < paddle.y + paddle.height && 
+                    ball.x > paddle.x && ball.x < paddle.x + paddle.width) {
+                    
+                    ball.y = paddle.y - ball.radius;
+                    const hitPosition = (ball.x - paddle.x) / paddle.width;
+                    const bounceAngle = (hitPosition - 0.5) * (Math.PI / 1.5);
+                    const levelSpeed = getLevelSpeed();
+                    
+                    ball.dx = levelSpeed * Math.sin(bounceAngle);
+                    ball.dy = -levelSpeed * Math.cos(bounceAngle);
+                    
+                    sounds.paddle();
+                }
+                
+                // 漏接
+                if (ball.y > canvas.height) {
+                    lives--;
+                    document.getElementById('lives').textContent = lives;
+                    
+                    if (lives <= 0) {
+                        gameOver(); return;
+                    } else {
+                        sounds.miss();
+                        ballIsMoving = false;
+                        resetBall();
+                        lastDropTime = Date.now(); 
+                        startHint.style.display = 'block';
+                        startHint.textContent = '漏接球！點擊發球';
+                        debug.textContent = `生命剩 ${lives}，點擊繼續`;
+                    }
+                }
+                
+                // ==================================
+                // 修正：方塊碰撞與反彈邏輯
+                // ==================================
+                let bricksLeft = 0;
+                let hitBrickThisFrame = false; // 紀錄這幀是否已經撞過方塊了
+                
+                bricks.forEach(brick => {
+                    if (brick.alive) {
+                        if (ball.x + ball.radius > brick.x && ball.x - ball.radius < brick.x + brick.width &&
+                            ball.y + ball.radius > brick.y && ball.y - ball.radius < brick.y + brick.height) {
+                            
+                            brick.alive = false;
+                            score += brick.points;
+                            document.getElementById('score').textContent = score;
+                            updateHighScore(score); updateStatsDisplay();
+                            sounds.brick();
+                            
+                            // 防止球在同一幀撞擊多個方塊導致速度反轉抵銷（貫穿Bug）
+                            if (!hitBrickThisFrame) {
+                                // 計算重疊面積來決定從哪一面撞擊
+                                let overlapLeft = (ball.x + ball.radius) - brick.x;
+                                let overlapRight = (brick.x + brick.width) - (ball.x - ball.radius);
+                                let overlapTop = (ball.y + ball.radius) - brick.y;
+                                let overlapBottom = (brick.y + brick.height) - (ball.y - ball.radius);
+                                
+                                let minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+                                
+                                // 判斷撞擊面是側面還是上下
+                                if (minOverlap === overlapLeft || minOverlap === overlapRight) {
+                                    ball.dx = -ball.dx; // 側面撞擊，左右反轉
+                                } else {
+                                    ball.dy = -ball.dy; // 上下撞擊，上下反轉
+                                }
+                                hitBrickThisFrame = true; // 鎖定這幀的反彈
+                            }
+                        } else {
+                            bricksLeft++; // 只有沒被撞破的方塊才計入剩餘數量
+                        }
+                    }
+                });
+                
+                if (bricksLeft === 0 && bricks.length > 0) nextLevel();
+            }
+            
+            paddle.x = mouseX - paddle.width / 2;
+            if (paddle.x < 0) paddle.x = 0;
+            if (paddle.x > canvas.width - paddle.width) paddle.x = canvas.width - paddle.width;
+            
+            if (!ballIsMoving) {
+                ball.x = paddle.x + paddle.width / 2;
+                ball.y = paddle.y - ball.radius - 2;
+            }
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            if (gameRunning || gameCleared) { requestAnimationFrame(gameLoop); }
+        }
+        
+        let mouseX = canvas.width / 2;
+        
+        canvas.addEventListener('mousemove', (e) => { const rect = canvas.getBoundingClientRect(); mouseX = e.clientX - rect.left; });
+        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); const touch = e.touches[0]; const rect = canvas.getBoundingClientRect(); mouseX = touch.clientX - rect.left; }, { passive: false });
+        
+        canvas.addEventListener('click', () => { 
+            if (gameCleared) { resetToLevel1(); return; }
+            if (!ballIsMoving && gameRunning && !gamePaused) launchBall(); 
+        });
+        canvas.addEventListener('touchstart', (e) => { 
+            e.preventDefault(); 
+            if (gameCleared) { resetToLevel1(); return; }
+            if (!ballIsMoving && gameRunning && !gamePaused) launchBall(); 
+        }, { passive: false });
+        
+        function startGame() {
+            if (startBtn.disabled) return;
+            if (!gameRunning) {
+                gameRunning = true; gamePaused = false; ballIsMoving = false;
+                resetBall();
+                dropCount = 0;
+                debug.textContent = '遊戲開始，點擊畫面發球';
+                gameLoop();
+            }
+        }
+        
+        initBricks();
+        updateBallDisplaySpeed();
+        updateStatsDisplay();
+        draw();
+        
+    </script>
+</body>
+</html>
